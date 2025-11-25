@@ -208,16 +208,21 @@ document.getElementById("uploadForm").addEventListener("submit", async function(
   formData.append("file", file);
 
   try{
-    const response = await fetch("http://127.0.0.1:5000/predict", {method:"POST", body:formData});
-    const data = await response.json();
+    const response = await fetch("/predict", { method: "POST", body: formData });
+
+    let data;
+    try {
+      data = await response.json(); // coba parse JSON
+    } catch(parseErr){
+      const text = await response.text();
+      throw new Error("Response bukan JSON:\n" + text);
+    }
 
     document.getElementById("loading").style.display="none";
 
-    if(data.status==="success"){
-
+    if(response.ok && data.status === "success"){
       globalData = data;
 
-      /* 🔥 SET JUDUL CHART OTOMATIS */
       document.getElementById("judulPrediksiChart").innerText =
         "Prediksi Harga Bawang Merah di Kota Probolinggo selama " + data.horizon + " Hari ke Depan";
 
@@ -227,16 +232,17 @@ document.getElementById("uploadForm").addEventListener("submit", async function(
       document.getElementById("result").style.display="flex";
       showForecastChart();
       renderTable();
-    } 
-    else alert("Error: "+data.message);
+    } else {
+      throw new Error(data.detail || data.message || "Unknown server error");
+    }
 
   } catch(err){ 
-    alert("Server error"); 
+    console.error("🚨 Error fetch:", err);
+    alert("❌ Terjadi error saat memproses file:\n" + err);
     document.getElementById("uploadCard").style.display="block";
     document.getElementById("loading").style.display="none";
   }
 });
-
 
 function renderChart(labels, predicted){
   const ctx = document.getElementById("chart").getContext("2d");
@@ -319,17 +325,10 @@ function renderTable(){
   document.getElementById("page-info").textContent=`Page ${currentPage}`;
 }
 
-document.getElementById("prev-page").onclick=()=>{
-  if(currentPage>1){ currentPage--; renderTable(); }
-};
-
-document.getElementById("next-page").onclick=()=>{
-  if(currentPage*rowsPerPage < globalData.pred_dates.length){
-    currentPage++; renderTable();
-  }
-};
-
+document.getElementById("prev-page").onclick=()=>{ if(currentPage>1){ currentPage--; renderTable(); } };
+document.getElementById("next-page").onclick=()=>{ if(currentPage*rowsPerPage < globalData.pred_dates.length){ currentPage++; renderTable(); } };
 </script>
+
 
 </body>
 </html>

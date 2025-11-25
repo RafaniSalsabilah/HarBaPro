@@ -1,10 +1,8 @@
-flask
-flask-cors
-gunicorn
+fastapi
+uvicorn
 pandas
 numpy
+openpyxl
 tensorflow
 catboost
-scikit-learn
-joblib
-openpyxl
+python-multipart

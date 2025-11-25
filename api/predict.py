@@ -1,65 +1,47 @@
-from flask import Flask, request, jsonify, send_from_directory
-from flask_cors import CORS
+# api/predict.py
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.responses import JSONResponse, FileResponse
+from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
 import numpy as np
-import os
-import json
-from tensorflow.keras.models import load_model
-from tensorflow.keras import Model
-from catboost import CatBoostRegressor
 from datetime import timedelta
 import traceback
+import io
+import os
 
-app = Flask(__name__)
-CORS(app)
+from .load_models import get_models
 
-MODEL_DIR = "models"
+app = FastAPI()
 
-# --- Load semua model dan metrics ---
-try:
-    lstm_path = os.path.join(MODEL_DIR, "best_lstm_model_2.h5")
-    cb_path = os.path.join(MODEL_DIR, "best_catboost_model_2.cbm")
-    metrics_path = os.path.join(MODEL_DIR, "hasil_evaluasi_2.json")
+# allow all origins (Vercel frontend can call)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-    lstm_model = load_model(lstm_path, compile=False)
-
-    cat_model = CatBoostRegressor()
-    cat_model.load_model(cb_path)
-
-    metrics = {}
-    try:
-        with open(metrics_path, "r") as f:
-            metrics = json.load(f)
-    except:
-        print("⚠️ Metrics JSON tidak ditemukan atau rusak. Menggunakan default.")
-
-    try:
-        hidden_extractor = Model(inputs=lstm_model.input, outputs=lstm_model.layers[-2].output)
-    except Exception:
-        hidden_extractor = Model(inputs=lstm_model.input, outputs=lstm_model.layers[-1].output)
-
-    print("✅ Semua model dan metrics berhasil dimuat.")
-
-except Exception as e:
-    print(f"⚠️ Gagal memuat model/metrics: {e}")
-    traceback.print_exc()
-    lstm_model, cat_model, hidden_extractor, metrics = None, None, None, None
-
-# -------------------------------
-# Fungsi Normalisasi Manual
-# -------------------------------
+# helper functions (same logic as sebelumnya) - keep them local here
 def minmax_manual(x, min_val=None, max_val=None, feature_range=(0.1, 1)):
-    min_x = min_val if min_val is not None else x.min()
-    max_x = max_val if max_val is not None else x.max()
+    s = pd.Series(x).astype(float)
+    min_x = min_val if min_val is not None else s.min()
+    max_x = max_val if max_val is not None else s.max()
     scale = feature_range[1] - feature_range[0]
-    return feature_range[0] + ((x - min_x) / (max_x - min_x)) * scale, min_x, max_x
+    if max_x == min_x:
+        mid = feature_range[0] + scale / 2.0
+        return pd.Series([mid] * len(s)), min_x, max_x
+    scaled = feature_range[0] + ((s - min_x) / (max_x - min_x)) * scale
+    if len(s) == 1:
+        return float(scaled.iloc[0]), min_x, max_x
+    return scaled, min_x, max_x
 
 def inverse_minmax_manual(value, min_val, max_val, feature_range=(0.1, 1)):
-    return min_val + (value - feature_range[0]) * (max_val - min_val) / (feature_range[1] - feature_range[0])
+    scale = feature_range[1] - feature_range[0]
+    if max_val == min_val:
+        return float(min_val)
+    return float(min_val + (value - feature_range[0]) * (max_val - min_val) / scale)
 
-# -------------------------------
-# Util: pembulatan & status Naik/Turun/Stabil
-# -------------------------------
 def round_to_thousands(x):
     try:
         return int(round(float(x) / 1000.0) * 1000)
@@ -73,20 +55,16 @@ def hitung_status_berbasis_rupiah(hist_rounded, pred_rounded):
             prev = hist_rounded[-1] if len(hist_rounded) > 0 else pred_rounded[0]
         else:
             prev = pred_rounded[i - 1]
-
         curr = pred_rounded[i]
         if curr > prev:
             status.append("Naik")
         elif curr < prev:
             status.append("Turun")
-            status.append("Turun")
         else:
             status.append("Stabil")
     return status
 
-# -------------------------------
-# Preprocessing
-# -------------------------------
+# reuse preprocessing helpers (you can factor these into another module if desired)
 def konversi_ke_numerik(df, kolom_list):
     for kolom in kolom_list:
         df[kolom] = df[kolom].astype(str).str.replace(",", ".", regex=False)
@@ -155,32 +133,35 @@ def bersihkan_harga(df, kolom="Harga"):
     df[kolom] = df[kolom].fillna(df[kolom].mean())
     return df
 
-# -------------------------------
-# Routes
-# -------------------------------
-@app.route("/")
+@app.get("/")
 def home():
-    return send_from_directory(".", "indexxx.html")
+    index_path = os.path.join(os.path.dirname(__file__), "..", "indexxx.html")
+    if os.path.exists(index_path):
+        return FileResponse(index_path)
+    return {"detail": "indexxx.html tidak ditemukan"}
 
-@app.route("/predict", methods=["POST"])
-def predict():
-
-    if "file" not in request.files:
-        return jsonify({"status":"error","message": "Tidak ada file yang diunggah."}), 400
-
-    file = request.files["file"]
-    if file.filename == "":
-        return jsonify({"status":"error","message": "Nama file kosong."}), 400
+@app.post("/predict")
+async def predict(file: UploadFile = File(...)):
+    lstm_model, cat_model, hidden_extractor, metrics = get_models()
+    if lstm_model is None or cat_model is None:
+        raise HTTPException(status_code=500, detail="Model belum dimuat di server.")
 
     if not file.filename.lower().endswith(".xlsx"):
-        return jsonify({"status":"error","message": "Format file harus .xlsx"}), 400
-
-    if lstm_model is None or cat_model is None:
-        return jsonify({"status":"error","message": "Model belum dimuat di server."}), 500
+        raise HTTPException(status_code=400, detail="Format file harus .xlsx")
 
     try:
-        df = pd.read_excel(file)
+        content = await file.read()
+        df = pd.read_excel(io.BytesIO(content))
+
+        # pastikan kolom wajib ada
+        required_cols = ["Waktu", "Harga", "Produksi", "Curah_Hujan", "Inflasi", "IHK", "Musim"]
+        missing = [c for c in required_cols if c not in df.columns]
+        if missing:
+            raise HTTPException(status_code=400, detail=f"Kolom hilang: {missing}")
+
         df["Waktu"] = pd.to_datetime(df["Waktu"])
+
+        # PREPROCESSING (pindah ke awal sebelum validasi)
         df = distribusi_bulanan_ke_harian(df, ["Inflasi", "IHK"])
         df = isi_otomatis_musim(df, "Musim")
         df = bersihkan_harga(df, "Harga")
@@ -188,20 +169,18 @@ def predict():
         df = distribusi_produksi_hanya_di_hari_panen(df)
 
         fitur_lstm = ["Harga", "Produksi", "Curah_Hujan", "Inflasi", "IHK"]
-        fitur_kat = ["Musim"]
+
         df = konversi_ke_numerik(df, fitur_lstm)
-        df = df.dropna(subset=fitur_lstm + fitur_kat + ["Harga"]).reset_index(drop=True)
 
-        if df.empty:
-            return jsonify({"status":"error","message": "Data tidak memiliki baris cukup setelah pembersihan."}), 400
-
+        # PREDIKSI (tidak diubah)
         harga_hist_raw = df["Harga"].tolist()
         waktu_hist = df["Waktu"].dt.date.astype(str).tolist()
 
         df_scaled = df.copy()
         min_max_dict = {}
         for col in fitur_lstm:
-            df_scaled[col], min_val, max_val = minmax_manual(df[col])
+            scaled_col, min_val, max_val = minmax_manual(df[col])
+            df_scaled[col] = float(scaled_col) if isinstance(scaled_col, (float, int)) else scaled_col
             min_max_dict[col] = (min_val, max_val)
 
         horizon = 60
@@ -213,10 +192,8 @@ def predict():
         last_date = df["Waktu"].max()
         np.random.seed(42)
 
-        for i in range(horizon):
-            input_window = np.array(scaled_rows[-window_size:])
-            x_input = np.expand_dims(input_window, axis=0)
-
+        for _ in range(horizon):
+            x_input = np.expand_dims(np.array(scaled_rows[-window_size:]), axis=0)
             hidden_feat = hidden_extractor.predict(x_input, verbose=0)
             hidden_vec = hidden_feat[0, -1] if hidden_feat.ndim == 3 else np.ravel(hidden_feat)
 
@@ -224,8 +201,7 @@ def predict():
             df_cb["Musim"] = musim_last
             cat_pred = float(np.ravel(cat_model.predict(df_cb))[0])
 
-            final_pred_scaled = cat_pred
-            harga_real_pred = inverse_minmax_manual(final_pred_scaled, *min_max_dict["Harga"])
+            harga_real_pred = inverse_minmax_manual(cat_pred, *min_max_dict["Harga"])
 
             MAPE = 0.06003469
             random_range = MAPE * 0.5
@@ -239,23 +215,21 @@ def predict():
 
             new_row = last_row_real.copy()
             new_row[0] = harga_real_noisy
-            new_row_scaled = []
+
+            new_scaled = []
             for j, col in enumerate(fitur_lstm):
-                val_scaled, _, _ = minmax_manual(pd.Series([new_row[j]]), *min_max_dict[col])
-                new_row_scaled.append(float(val_scaled))
-            scaled_rows.append(new_row_scaled)
+                scaled_val, _, _ = minmax_manual(pd.Series([new_row[j]]), *min_max_dict[col])
+                new_scaled.append(float(scaled_val))
+            scaled_rows.append(new_scaled)
             last_row_real = new_row
 
         pred_dates = [(last_date + timedelta(days=i + 1)).date().isoformat() for i in range(horizon)]
-        combined_dates = waktu_hist + pred_dates
 
         harga_hist_rounded = [round_to_thousands(p) for p in harga_hist_raw]
         harga_pred_rounded = [round_to_thousands(p) for p in harga_pred_real]
-
         pred_status = hitung_status_berbasis_rupiah(harga_hist_rounded, harga_pred_rounded)
-        combined_prices_rounded = harga_hist_rounded + harga_pred_rounded
 
-        return jsonify({
+        return JSONResponse({
             "status": "success",
             "horizon": horizon,
             "hist_dates": waktu_hist,
@@ -263,10 +237,13 @@ def predict():
             "pred_dates": pred_dates,
             "pred_prices": harga_pred_rounded,
             "pred_status": pred_status,
-            "combined_dates": combined_dates,
-            "combined_prices": combined_prices_rounded
+            "combined_dates": waktu_hist + pred_dates,
+            "combined_prices": harga_hist_rounded + harga_pred_rounded
         })
+
+    except HTTPException:
+        raise
 
     except Exception as e:
         traceback.print_exc()
-        return jsonify({"status":"error","message": str(e)}), 500
+        raise HTTPException(status_code=500, detail=str(e))
