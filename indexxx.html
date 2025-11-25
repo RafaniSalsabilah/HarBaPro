@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>HarBaPro Forecast</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1"></script>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" />
+<link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
+<style>
+/* Header dan body */
+html, body {
+  margin:0; padding:0; height:100%; width:100%; font-family:'Segoe UI', sans-serif;
+  background: linear-gradient(135deg, #e8e4ff, #d7f6f4);
+}
+
+/* Header */
+.header {
+  width:100%; background:#cce6ff; padding:12px 0; text-align:center; 
+  border-bottom:1px solid #99ccff; font-weight:700; font-size:2rem; color:#0077b6; 
+  text-shadow:1px 1px 2px rgba(0,0,0,0.2);
+}
+
+/* Container */
+.container-custom {
+  max-width: 100%;
+  margin:5px auto;
+  padding: 15px 15px;
+  display:flex;
+  flex-direction:column;
+}
+
+/* Card */
+.card-custom {
+  border-radius:18px; 
+  box-shadow:0 6px 20px rgba(0,0,0,0.08); 
+  background:#ffffffcc;
+  backdrop-filter: blur(10px); 
+  padding:20px;
+}
+
+/* Canvas chart */
+canvas { 
+  background:white; border-radius:10px; width:100% !important; height:75% !important; 
+  display:block;
+}
+
+/* Judul chart / tabel */
+h5 {
+  font-weight:700;
+  font-size:1.3rem;
+  text-align:center;
+  background: linear-gradient(90deg, #66c2a5, #FFC3A0); 
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  margin-bottom:15px;
+}
+
+/* Tombol */
+.btn-upload {
+  background: #A3C4BC;
+  color:white;
+  font-weight:600;
+  transition:0.2s;
+}
+.btn-upload:hover{
+  background:#88b9aa;
+}
+
+/* Flex untuk hasil chart + tabel */
+.flex-result { display:flex; flex-direction:column; width: 100%!important; height: 100%!important;; gap:20px; margin-top:15px; }
+
+/* Table */
+.table-box { max-height:400px; overflow-y:auto; }
+table { width:100%; border-collapse: collapse; }
+th, td { border:1px solid #ccc; padding:6px; text-align:center; font-size:0.9rem; }
+table thead { background:#88b9aa; color:white; }
+
+/* Zoom buttons */
+.zoom-btn { background:#FFC3A0; border:none; color:white; padding:6px 14px; border-radius:8px; transition:0.2s; cursor:pointer; }
+.zoom-btn:hover{ opacity:0.8; }
+
+/* Loading overlay */
+#loading {
+  display:none; 
+  position:relative; 
+  text-align:center; 
+}
+#loading div.spinner-container {
+  display:inline-block;
+  background:white;
+  padding:20px;
+  border-radius:12px;
+  box-shadow:0 6px 20px rgba(0,0,0,0.15);
+}
+
+/* Legend panah */
+.legend-arrows {
+  border-radius:12px;
+  background: #ffffffcc;
+  backdrop-filter: blur(8px);
+  padding:10px 15px;
+  box-shadow:0 4px 15px rgba(0,0,0,0.1);
+  display:flex; justify-content:center; gap:25px; font-weight:600;
+}
+.legend-arrows span i {
+  margin-right:5px;
+  font-size:1.1rem;
+  vertical-align:middle;
+}
+
+/* Footer */
+.footer-custom {
+  width: 100%;
+  padding: 10px;
+  background: #ffffffcc;
+  border-top: 1px solid #cce0ff;
+  backdrop-filter: blur(6px);
+  box-shadow: 0 -4px 15px rgba(0,0,0,0.05);
+  font-size: 1rem;
+  color: #0077b6;
+  font-weight: 600;
+  margin: 0;
+}
+</style>
+</head>
+<body>
+
+<div class="header"><i class="bi bi-lightning-charge-fill" style="color: #66c2a5"></i> HarBaPro Forecast</div>
+
+<div class="container-custom">
+  <div class="card card-custom" id="uploadCard">
+    <form id="uploadForm" enctype="multipart/form-data">
+      <div class="mb-3">
+        <label class="form-label">
+          <strong><i class="bi bi-file-earmark-excel" style="color:#66c2a5;"></i> Choose Dataset File (.xlsx)</strong>
+        </label>
+        <input class="form-control" type="file" id="file" name="file" accept=".xlsx,.xls" required />
+      </div>
+      <button class="btn btn-upload w-100" type="submit">
+        <i class="bi bi-cloud-upload-fill"></i> Upload and Predicted Dataset
+      </button>
+    </form>
+  </div>
+
+<div id="loading" class="text-center">
+  <div class="spinner-container">
+    <div class="spinner-border text-primary" role="status"></div>
+    <span>⏳ Sedang memproses data...</span>
+  </div>
+</div>
+
+  <div id="result" style="display:none;">
+    <div class="flex-result">
+      <div class="chart-container card card-custom" id="chartCard">
+
+        <!-- 🔥 SUDAH DIBENERKAN -->
+        <h5 id="judulPrediksiChart"></h5>
+
+        <canvas id="chart"></canvas>
+      </div>
+
+      <div class="table-container card card-custom" id="tableCard">
+        <h5 id="judulPrediksiTabel"></h5>
+        <div class="table-box">
+          <table>
+            <thead>
+              <tr><th>No</th><th>Tanggal</th><th>Harga</th><th>Status Prediksi</th></tr>
+            </thead>
+            <tbody id="predTableBody"></tbody>
+          </table>
+        </div>
+        <div class="d-flex justify-content-between mt-2">
+          <button class="zoom-btn" id="prev-page">Prev</button>
+          <span id="page-info" style="align-self:center;"></span>
+          <button class="zoom-btn" id="next-page">Next</button>
+        </div>
+
+        <div class="legend-arrows mt-3">
+          <span style="color:#28a745;"><i class="bi bi-arrow-up-circle-fill"></i> Kenaikan Harga</span>
+          <span style="color:#dc3545;"><i class="bi bi-arrow-down-circle-fill"></i> Penurunan Harga</span>
+          <span style="color:#6c757d;"><i class="bi bi-dash-circle-fill"></i> Harga Stabil</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<footer class="footer-custom text-center">
+  <span style="font-size:0.85rem; opacity:0.7;">© 2025 - Prediksi Harga Bawang Merah Kota Probolinggo</span>
+</footer>
+
+<script>
+let chartInstance = null;
+let globalData = null;
+let currentPage = 1;
+const rowsPerPage = 10;
+
+document.getElementById("uploadForm").addEventListener("submit", async function(e){
+  e.preventDefault();
+  
+  document.getElementById("uploadCard").style.display="none";
+  document.getElementById("loading").style.display="block";
+
+  const file = document.getElementById("file").files[0];
+  const formData = new FormData(); 
+  formData.append("file", file);
+
+  try{
+    const response = await fetch("http://127.0.0.1:5000/predict", {method:"POST", body:formData});
+    const data = await response.json();
+
+    document.getElementById("loading").style.display="none";
+
+    if(data.status==="success"){
+
+      globalData = data;
+
+      /* 🔥 SET JUDUL CHART OTOMATIS */
+      document.getElementById("judulPrediksiChart").innerText =
+        "Prediksi Harga Bawang Merah di Kota Probolinggo selama " + data.horizon + " Hari ke Depan";
+
+      document.getElementById("judulPrediksiTabel").innerText =
+        "Nilai Prediksi Harga Bawang Merah di Kota Probolinggo selama " + data.horizon + " Hari ke Depan";
+
+      document.getElementById("result").style.display="flex";
+      showForecastChart();
+      renderTable();
+    } 
+    else alert("Error: "+data.message);
+
+  } catch(err){ 
+    alert("Server error"); 
+    document.getElementById("uploadCard").style.display="block";
+    document.getElementById("loading").style.display="none";
+  }
+});
+
+
+function renderChart(labels, predicted){
+  const ctx = document.getElementById("chart").getContext("2d");
+  if(chartInstance) chartInstance.destroy();
+
+  chartInstance = new Chart(ctx,{
+    type:"line",
+    data:{
+      labels,
+      datasets: [{
+        label: "Nilai Prediksi Harga Bawang Merah",
+        data: predicted,
+        borderColor: "#A3C4BC",
+        backgroundColor: "rgba(163,196,188,0.3)",
+        tension: 0.3,
+        pointRadius: 4,
+        pointHoverRadius: 6,
+        pointBackgroundColor: "#A3C4BC",
+        pointHoverBackgroundColor: "#FFC3A0"
+      }]
+    },
+    options:{
+      responsive:true,
+      interaction: { mode:'nearest', intersect:true },
+      plugins:{
+        tooltip:{
+          enabled:true,
+          callbacks:{
+            label: c => "Rp" + c.raw.toLocaleString('id-ID')
+          }
+        },
+        zoom:{
+          pan:{ enabled:true, mode:'x' },
+          zoom:{ wheel:{enabled:true}, pinch:{enabled:true}, mode:'x' }
+        }
+      },
+      scales:{
+        x:{ ticks:{ color:"#333" }, grid:{ color:"#ccc" } },
+        y:{ ticks:{ color:"#333" }, grid:{ color:"#ccc" } }
+      }
+    }
+  });
+}
+
+function showForecastChart(){ 
+  renderChart(globalData.pred_dates, globalData.pred_prices); 
+}
+
+function renderTable(){
+  const tbody = document.getElementById("predTableBody");
+  tbody.innerHTML="";
+  const start = (currentPage-1)*rowsPerPage;
+  const end = start+rowsPerPage;
+
+  const dates = globalData.pred_dates.slice(start,end);
+  const prices = globalData.pred_prices.slice(start,end);
+  const statuses = globalData.pred_status.slice(start,end);
+
+  dates.forEach((d,i)=>{
+    const idx=start+i;
+    let iconHTML = '';
+
+    if(statuses[i] === "Naik"){
+      iconHTML = '<i class="bi bi-arrow-up-circle-fill" style="color:#28a745;"></i>';
+    } else if(statuses[i] === "Turun"){
+      iconHTML = '<i class="bi bi-arrow-down-circle-fill" style="color:#dc3545;"></i>';
+    } else {
+      iconHTML = '<i class="bi bi-dash-circle-fill" style="color:#6c757d;"></i>';
+    }
+
+    tbody.innerHTML+=`
+      <tr>
+        <td>${idx+1}</td>
+        <td>${d}</td>
+        <td>Rp ${prices[i].toLocaleString('id-ID')}</td>
+        <td>${iconHTML}</td>
+      </tr>`;
+  });
+
+  document.getElementById("page-info").textContent=`Page ${currentPage}`;
+}
+
+document.getElementById("prev-page").onclick=()=>{
+  if(currentPage>1){ currentPage--; renderTable(); }
+};
+
+document.getElementById("next-page").onclick=()=>{
+  if(currentPage*rowsPerPage < globalData.pred_dates.length){
+    currentPage++; renderTable();
+  }
+};
+
+</script>
+
+</body>
+</html>
