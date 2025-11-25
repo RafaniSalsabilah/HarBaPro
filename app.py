@@ -120,7 +120,7 @@ def distribusi_bulanan_ke_harian(df, kolom_list):
     for kolom in kolom_list:
         nilai_bulanan = (
             df.dropna(subset=[kolom])
-            .drop_duplicates("BULAN_TAHUN")[["BULAN_TAHUN, kolom]]
+            .drop_duplicates("BULAN_TAHUN")[["BULAN_TAHUN", kolom]]
         )
         df = df.drop(columns=[kolom], errors="ignore")
         df = df.merge(nilai_bulanan, on="BULAN_TAHUN", how="left")
